@@ -50,7 +50,7 @@ sub stop {
         for my $name (keys %{$self->{keep}}) {
             $SIG{$name} = $self->{keep}{$name};
         }
-        $self->emit($_, $_) for splice @{$self->{signals}};
+        $self->emit($_, $_, ($_ eq 'CHLD' ? (0, undef) : ())) for splice @{$self->{signals}};
     }
     $self->{keep} = {};
     $self;
@@ -88,7 +88,7 @@ sub _watch {
         return $self->_forked unless $$ eq $self->{pid};
         my $rc = sysread $self->{read}, my $b, 1024;
         if ($rc) {
-            $self->emit($_, $_) for splice @{$self->{signals}};
+            $self->emit($_, $_, ($_ eq 'CHLD' ? (0, undef) : ())) for splice @{$self->{signals}};
         } else {
             return $self->emit(error => "pipe read: $!");
         }
@@ -111,10 +111,21 @@ sub _watch {
 sub on {
     my ($self, $name, $cb) = (_instance(shift), @_);
     if ($self->_is_signame($name) and !exists $self->{keep}{$name}) {
+        weaken $self;
         if ($self->{is_ev}) {
-            $self->{keep}{$name} = EV::signal($name => sub { $self->emit($name, $name) });
+            if ($name eq 'CHLD') {
+                $self->{keep}{$name} = EV::child(0, 0, sub { 
+                    return unless $self;
+                    my $w = $self->{keep}{$name};
+                    $self->emit($name, $name, $w->rpid, $w->rstatus);
+                });
+            } else {
+                $self->{keep}{$name} = EV::signal($name => sub { 
+                    return unless $self;
+                    $self->emit($name, $name);
+                });
+            }
         } else {
-            weaken $self;
             $self->_watch unless $self->{write};
             $self->{keep}{$name} = $SIG{$name} || 'DEFAULT';
             $SIG{$name} = sub {
